@@ -1,5 +1,8 @@
 Revision history for Net-FSP
 
+0.11    August 21, 2008
+        Second version. Fixed some documentation mistakes. Refactored some code.
+
 0.10    August 20, 2008
         First version, released on an unsuspecting world.
 

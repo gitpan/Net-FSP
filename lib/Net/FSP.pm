@@ -2,7 +2,7 @@ package Net::FSP;
 use 5.006;
 use strict;
 use warnings;
-our $VERSION = 0.10;
+our $VERSION = 0.11;
 
 use Carp qw/croak/;
 use Socket qw/PF_INET PF_INET6 SOCK_DGRAM sockaddr_in inet_aton/;
@@ -48,9 +48,6 @@ my @info = qw/logging read-only reverse-lookup private-mode throughput-control e
 my @mods = qw/owner delete create mkdir private readme list rename/;
 
 my %is_nonfatal = map { ( $_ => 1 ) } (ENOBUFS, EHOSTUNREACH, ECONNREFUSED, EHOSTDOWN, ENETDOWN, EPIPE, EAGAIN, EINTR);
-sub _is_fatal {
-	return !$is_nonfatal{shift() + 0};
-}
 
 my %connect_sub_for = (
 	ipv4 => \&_connect_ipv4,
@@ -59,7 +56,7 @@ my %connect_sub_for = (
 
 # Constructor
 sub new {
-	my $self = _handle_arguments(@_);
+	my $self = &_handle_arguments;
 	my $connector = $connect_sub_for{$self->{network_layer}} or croak 'No such network layer';
 	$self->$connector();
 	$self->_prepare_socket();
@@ -128,10 +125,52 @@ sub _prepare_socket {
 	return;
 }
 
+sub _pack_request {
+	my ($self, $send_command, $send_pos, $send_data, $send_extra) = @_;
+	$self->{message_id} = $self->{message_id} + 1 & $SIXTEEN_BITS;
+	my $request = pack 'CxnnnN a*a*', $code_for{$send_command}, $self->{key}, $self->{message_id}, length $send_data, $send_pos, $send_data, $send_extra;
+	vec($request, 1, 8) = _checksum($request, length $request);
+	return $request;
+}
+
+sub _check_fatal {
+	my $message = shift;
+	croak "$message: $!" if not $is_nonfatal{$! + 0};
+	return;
+}
+
+sub _receive {
+	my ($self, $response) = @_;
+	return recv $self->{socket}, $$response, $self->{max_payload_size} + $HEADER_SIZE, 0 or _check_fatal('Could not receive');
+}
+
+sub _send {
+	my ($self, $request) = @_;
+	send $self->{socket}, $request, 0 or _check_fatal('Could not send');
+	return;
+}
+
 sub _replies_pending {
 	my $self = shift;
 	my $timeout = shift || 0;
 	return select my $rout = $self->{rin}, undef, undef, $timeout;
+}
+
+sub _unpack_response {
+	my ($self, $response) = @_;
+	my %fields;
+	@fields{'command', 'checksum', 'key', 'message_id', 'length', 'pos', 'fulldata'} = unpack 'CCnnnN a*', $response;
+	@fields{'data', 'extra'} = unpack "a[$fields{length}]a*", $fields{fulldata};
+	return %fields;
+}
+
+sub _response_is_correct {
+	my ($self, $value_for, $response, $send_command, $send_pos) = @_;
+	vec($response, 1, 8) = 0;
+	return $value_for->{checksum} == _checksum($response, 0)
+		and length $value_for->{fulldata} >= $value_for->{length}
+		and ($value_for->{command} == $code_for{$send_command} || $value_for->{command} == $code_for{err})
+		and (!$pos_must_match_for{$value_for->{command}} || $send_pos == $value_for->{pos});
 }
 
 # the main networking function, known as interact() in the C library. It's a bit complex, but fairly robust.
@@ -139,46 +178,25 @@ sub _send_receive {
 	my ($self, $send_command, $send_pos, $send_data, $send_extra) = @_;
 	$send_extra = '' if not defined $send_extra;
 
-	$self->{message_id} = $self->{message_id} + 1 & $SIXTEEN_BITS;
-	my $request = pack 'CxnnnN a*a*', $code_for{$send_command}, $self->{key}, $self->{message_id}, length $send_data, $send_pos, $send_data, $send_extra;
-	vec($request, 1, 8) = _checksum($request, length $request);
+	my $request = $self->_pack_request($send_command, $send_pos, $send_data, $send_extra);
 	ATTEMPT:
 	for (my $timeout = $self->{min_timeout}; $timeout < $self->{max_timeout}; $timeout *= $self->{timeout_factor}) {
-		# if there are no messages on the receive queue, send a (new) one and wait for a reply.
-		# If there is no reply, repeat cycle.
 		if (not $self->_replies_pending) {
-			send $self->{socket}, $request, 0 or do {
-				croak "Could not send: $!" if _is_fatal($!);
-			};
+			$self->_send($request);
 			next ATTEMPT if not $self->_replies_pending($timeout);
 		}
+		next ATTEMPT if not $self->_receive(\my $response);
 
-		# Try to read a message from the read queue. If there is no message, repeat cycle.
-		# If there is a real error, throw it.
-		recv $self->{socket}, my $response, $self->{max_payload_size} + $HEADER_SIZE, 0 or do {
-			next ATTEMPT unless _is_fatal($!);
-			croak "Could not receive: $!";
-		};
-
-		#Parse the received message
 		next ATTEMPT if length $response < $HEADER_SIZE;
-		my ($recv_command, $checksum, $new_key, $recv_message_id, $datalength, $recv_pos, $fulldata) = unpack 'CCnnnN a*', $response;
-		my ($recv_data, $recv_extra) = unpack "a[$datalength]a*", $fulldata;
+		my %response = $self->_unpack_response($response);
+		next ATTEMPT if not $self->_response_is_correct(\%response, $response, $send_command, $send_pos);
+		$self->{key} = $response{key};
+		redo ATTEMPT if $response{message_id} != $self->{message_id};
 
-		#Validate message
-		vec($response, 1, 8) = 0;
-		next ATTEMPT if $checksum != _checksum($response, 0)
-			or length $fulldata < $datalength
-			or not ($recv_command == $code_for{$send_command} || $recv_command == $code_for{err})
-			or ($pos_must_match_for{$recv_command} && $send_pos != $recv_pos);
-		$self->{key} = $new_key;
-		redo ATTEMPT if $recv_message_id != $self->{message_id};
-
-		#Handle errors, or return data
-		croak sprintf 'Received error from server: %s', unpack 'Z*', $recv_data if $recv_command == $code_for{err};
-		return wantarray ? ($recv_data, $recv_extra) : $recv_data;
+		croak sprintf 'Received error from server: %s', unpack 'Z*', $response{data} if $response{command} == $code_for{err};
+		return wantarray ? @response{'data', 'extra'} : $response{data};
 	}
-	croak 'Server unresponsive';
+	croak 'Remote server not responding.';
 }
 
 sub _checksum {
@@ -282,7 +300,7 @@ sub _download_to {
 sub download_file {
 	my($self, $filename, $other) = @_;
 	if (ref($other) eq '') {
-		open my $fh, '>:bytes', $other or croak "Couldn't open file '$other' for writing: $!";
+		open my $fh, '>:raw', $other or croak "Couldn't open file '$other' for writing: $!";
 		$self->download_file($filename, $fh);
 		close $fh or croak "Couldn't close filehandle: $!";
 	}
@@ -298,7 +316,7 @@ sub download_file {
 sub grab_file {
 	my ($self, $filename, $other) = @_;
 	if (ref($other) eq '') {
-		open my $fh, '>:bytes', $other or croak "Couldn't open file '$other' for writing: $!";
+		open my $fh, '>:raw', $other or croak "Couldn't open file '$other' for writing: $!";
 		$self->grab_file($filename, $fh);
 		close $fh or croak "Couldn't close filehandle: $!";
 	}
@@ -382,7 +400,7 @@ sub _upload_to {
 sub upload_file {
 	my($self, $filename, $other, $timestamp) = @_;
 	if (ref($other) eq '') {
-		open my $fh, '<:bytes', $other or croak "Couldn't open file '$other' for reading: $!";
+		open my $fh, '<:raw', $other or croak "Couldn't open file '$other' for reading: $!";
 		$self->upload_file($filename, $fh, $timestamp);
 		close $fh or croak "Couldn't close filehandle!?: $!";
 	}
@@ -471,7 +489,7 @@ This documentation refers to Net::FSP version 0.10
      my ($dirname) = @_;
      mkdir "./$dirname" or die "mkdir './$dirname': $!\n" if not -d "./$dirname";
      for my $file ($fsp->list_dir($dirname)) {
-	     my $filename = $file->{name};
+         my $filename = $file->{name};
          if ($fsp->stat_file("$dirname/$filename")->{type} eq 'dir') {
              download_dir("$dirname/$filename");
          }
@@ -496,7 +514,7 @@ FSP.
 
 =over 4
 
-=item new(hostname, {...})
+=item new($remote_host, {...})
 
 Creates a new Net::FSP object. As its optional second argument it takes a
 hashref of the following members:
@@ -505,7 +523,7 @@ hashref of the following members:
 
 =item remote_port
 
-The remote port to connect to. It defaults to B<21>
+The remote port to connect to. It defaults to B<21>.
 
 =item local_address
 
@@ -540,13 +558,14 @@ Your password for this server. It defaults to undef(none).
 =item max_payload_size
 
 The maximal size of the payload. It defaults to B<1024>. Some servers may not
-support values higher than 1024.
+support values higher than 1024. Setting this higher than the MTU - 12 is
+disrecommended.
 
 =item network_layer
 
 This sets the protocol used as network layer. Currently the only supported
-values are ipv4 (the default) and ipv6. (Note: as of writing no FSP server
-supports ipv6 yet).
+values are B<ipv4> (the default) and B<ipv6> (this requires having the Socket6 module
+installed). As of writing no FSP server supports ipv6 yet though.
 
 =item read_size
 
@@ -588,7 +607,7 @@ This method returns the full version of the server.
 
 This method returns some information about the configuration of the server. It
 returns a hashref with the following elements: I<logging>, I<read-only>,
-I<reverse-lookup>, I<private-mode> I<throughput-control> I<extra-data>
+I<reverse-lookup>, I<private-mode> I<throughput-control> I<extra-data>.
 
 =item download_file($file_name, $sink)
 
@@ -644,10 +663,14 @@ This method returns the directory's protection. It returns a hash
 reference with the elements C<owner>, C<delete>, C<create>, C<mkdir>,
 C<private>, C<readme>, C<list> and C<rename>.
 
-=item set_protection($directory_name, $mod)
+=item set_protection($directory_name, $mode)
 
-This method changes the protection of directory C<$directory_name>. Its return
-value is the same as get_protection.
+This method changes the permission of directory C<$directory_name> for public
+users. It's mode argument is consists of two characters. The first byte is I<+>
+or I<->, to indicate whether the permission is granted or revoked. The second
+byte contains a I<c>, I<d>, I<g>, I<m>, I<l> or I<r> for the permission to
+create files, delete files, get files, create directories, list the directory
+or rename files.  Its return value is the same as get_protection. 
 
 =item make_dir($directory_name)
 
@@ -665,7 +688,7 @@ If the server encounters an error, it will be thrown as an exception string,
 prepended by I<'Received error from server: '>. Unfortunately the content of
 these errors are not well documented. Since the protocol is almost statelesss,
 one can usually assume these errors have no effect on later requests. If the
-server doesn't respond at all, a 'Server unresponsive' exception will
+server doesn't respond at all, a 'Remote server not responding.' exception will
 eventually be thrown.
 
 =head1 DEPENDENCIES
