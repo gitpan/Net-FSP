@@ -3,6 +3,10 @@ MANIFEST
 Makefile.PL
 README
 lib/Net/FSP.pm
+lib/Net/FSP/Entry.pm
+lib/Net/FSP/File.pm
+lib/Net/FSP/Dir.pm
+lib/Net/FSP/Util.pm
 t/00-load.t
 t/pod-coverage.t
 t/pod.t

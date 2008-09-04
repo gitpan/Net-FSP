@@ -2,12 +2,15 @@ package Net::FSP;
 use 5.006;
 use strict;
 use warnings;
-our $VERSION = 0.11;
+our $VERSION = 0.12;
 
 use Carp qw/croak/;
-use Socket qw/PF_INET PF_INET6 SOCK_DGRAM sockaddr_in inet_aton/;
+use Socket qw/PF_INET SOCK_DGRAM sockaddr_in inet_aton INADDR_ANY/;
 use Errno qw/EAGAIN ENOBUFS EHOSTUNREACH ECONNREFUSED EHOSTDOWN ENETDOWN EPIPE EINTR/;
 use Fcntl qw/F_GETFL F_SETFL O_NONBLOCK/;
+
+use Net::FSP::File;
+use Net::FSP::Dir;
 
 my $HEADER_SIZE = 12;
 my $LISTING_HEADER_SIZE = 9;
@@ -34,6 +37,7 @@ my %code_for = (
 	grab_done => 0x4C,
 	stat_file => 0x4D,
 	move_file => 0x4E,
+	ch_passw  => 0x4F, #future
 );
 my %type_of = (
 	0x00 => 'end',
@@ -54,75 +58,86 @@ my %connect_sub_for = (
 	ipv6 => \&_connect_ipv6,
 );
 
-# Constructor
-sub new {
-	my $self = &_handle_arguments;
-	my $connector = $connect_sub_for{$self->{network_layer}} or croak 'No such network layer';
-	$self->$connector();
-	$self->_prepare_socket();
-	return $self;
-}
+my %dispatch_for = (
+	file => 'Net::FSP::File',
+	dir  => 'Net::FSP::Dir',
+);
 
-sub _handle_arguments {
+my %default_options = (
+	remote_port      => 21,
+	local_port       => 0,
+	local_adress     => undef,
+	min_delay        => 1.34,
+	max_delay        => 60,
+	delay_factor     => 1.5,
+	max_payload_size => $DEFAULT_MAX_SIZE,
+	password         => undef,
+	key              => 0,
+	network_layer    => 'ipv4',
+	current_dir      => '/',
+);
+
+# Constructor and helper functions
+sub new {
 	my ($class, $remote_host, $options) = @_;
 	$options ||= {};
 	my %self = (
-		remote_port      => 21,
-		local_port       => 0,
-		local_adress     => undef,
-		min_timeout      => 1.34,
-		max_timeout      => 60,
-		timeout_factor   => 1.5,
-		max_payload_size => $DEFAULT_MAX_SIZE,
-		password         => undef,
-		key              => 0,
-		network_layer    => 'ipv4',
+		%default_options,
 		%{ $options },
 		remote_host      => $remote_host,
 		message_id       => int rand 65_536,
-		current_dir      => '',
 		rin              => '',
 	);
 	for my $size (qw/read_size write_size listing_size/) {
 		$self{$size} ||= $self{max_payload_size};
 	}
-	return bless \%self, $class;
+	my $self = bless \%self, $class;
+	my $connector = $connect_sub_for{$self->{network_layer}} or croak 'No such network layer';
+	$self->$connector();
+	$self->_prepare_socket();
+	$self->change_dir($self->{current_dir});
+	return $self;
 }
 
 sub _connect_ipv4 {
 	my $self = shift;
+
 	socket $self->{socket}, PF_INET, SOCK_DGRAM, 0 or croak "Could not make socket: $!";
-	if (defined $self->{local_address}) {
-		my $local_address = inet_aton($self->{local_address}) or croak "No such localhost: $!";
-		bind $self->{socket}, sockaddr_in($self->{local_port}, $local_address) or croak "Could not bind to $self->{local_address}:$self->{local_port}: $!" ;
-	}
+	my $local_address = $self->{local_address} ? inet_aton($self->{local_address}) : INADDR_ANY or croak "No such localhost: $!";
+	bind $self->{socket}, sockaddr_in($self->{local_port}, $local_address) or croak "Could not bind: $!" ;
 	my $packed_ip = inet_aton($self->{remote_host}) or croak "No such host '$self->{remote_host}'";
-	connect $self->{socket}, sockaddr_in($self->{remote_port}, $packed_ip) or croak "Could not connect to $self->{remote_host}:$self->{port}: $!";
+	connect $self->{socket}, sockaddr_in($self->{remote_port}, $packed_ip) or croak "Could not connect to remote host: $!";
 	return;
 }
 
 sub _connect_ipv6 {
-	require Socket6;
-	Socket6->import(qw/pack_sockaddr_in6 inet_pton gethostbyname2/) unless defined &inet_pton;
-
 	my $self = shift;
-	socket $self->{socket}, PF_INET6, SOCK_DGRAM, 0 or croak "Could not make socket: $!";
-	if (defined $self->{local_address}) {
-		my $local_address = inet_pton($self->{local_address}) or croak "No such localhost: $!";
-		bind $self->{socket}, pack_sockaddr_in6($self->{local_port}, $local_address) or croak "Could not bind to $self->{local_address}:$self->{local_port}: $!";
-	}
-	my $packed_ip = gethostbyname2($self->{remote_host}, PF_INET6) or croak "No such host '$self->{remote_host}'";
-	connect $self->{socket}, pack_sockaddr_in6($self->{remote_port}, $packed_ip) or croak "Could not connect to $self->{remote_host}:$self->{port}: $!";
+	require Socket6;
+
+	my $family = Socket6::PF_INET6();
+	socket $self->{socket}, $family, SOCK_DGRAM, 0 or croak "Could not make socket: $!";
+	my $local_ip = $self->{local_address} ? Socket6::inet_pton($family, $self->{local_address}) || croak "No such localhost: $!" : Socket6::in6addr_any();
+	bind $self->{socket}, Socket6::pack_sockaddr_in6($self->{local_port}, $local_ip) or croak "Could not bind: $!";
+	my $packed_ip = Socket6::gethostbyname2($self->{remote_host}, $family) or croak "No such host '$self->{remote_host}'";
+	connect $self->{socket}, Socket6::pack_sockaddr_in6($self->{remote_port}, $packed_ip) or croak "Could not connect to remote host: $!";
 	return;
 }
 
 sub _prepare_socket {
 	my $self = shift;
 	binmode $self->{socket}, ':raw';
-	my $flags = fcntl $self->{socket}, F_GETFL, 0       or croak "Can’t get flags for the socket: $!";
-	fcntl $self->{socket}, F_SETFL, $flags | O_NONBLOCK or croak "Can’t set flags for the socket: $!";
+	my $flags = fcntl $self->{socket}, F_GETFL, 0       or croak "Can't get flags for the socket: $!";
+	fcntl $self->{socket}, F_SETFL, $flags | O_NONBLOCK or croak "Can't set flags for the socket: $!";
 	vec($self->{rin}, fileno $self->{socket}, 1) = 1;
 	return;
+}
+
+# send_receive and helpers
+
+sub _checksum {
+	my ($package, $sum) = @_;
+	$sum += unpack '%32a*', $package;
+	return ($sum + ($sum >> 8)) & 0xFF;
 }
 
 sub _pack_request {
@@ -141,7 +156,7 @@ sub _check_fatal {
 
 sub _receive {
 	my ($self, $response) = @_;
-	return recv $self->{socket}, $$response, $self->{max_payload_size} + $HEADER_SIZE, 0 or _check_fatal('Could not receive');
+	return recv $self->{socket}, ${$response}, $self->{max_payload_size} + $HEADER_SIZE, 0 or _check_fatal('Could not receive');
 }
 
 sub _send {
@@ -152,8 +167,8 @@ sub _send {
 
 sub _replies_pending {
 	my $self = shift;
-	my $timeout = shift || 0;
-	return select my $rout = $self->{rin}, undef, undef, $timeout;
+	my $delay = shift || 0;
+	return select my $rout = $self->{rin}, undef, undef, $delay;
 }
 
 sub _unpack_response {
@@ -170,20 +185,20 @@ sub _response_is_correct {
 	return $value_for->{checksum} == _checksum($response, 0)
 		and length $value_for->{fulldata} >= $value_for->{length}
 		and ($value_for->{command} == $code_for{$send_command} || $value_for->{command} == $code_for{err})
-		and (!$pos_must_match_for{$value_for->{command}} || $send_pos == $value_for->{pos});
+		and not ($pos_must_match_for{$value_for->{command}} && $send_pos != $value_for->{pos});
 }
 
-# the main networking function, known as interact() in the C library. It's a bit complex, but fairly robust.
+# the main networking function, known as interact() in the C library.
 sub _send_receive {
 	my ($self, $send_command, $send_pos, $send_data, $send_extra) = @_;
 	$send_extra = '' if not defined $send_extra;
 
 	my $request = $self->_pack_request($send_command, $send_pos, $send_data, $send_extra);
 	ATTEMPT:
-	for (my $timeout = $self->{min_timeout}; $timeout < $self->{max_timeout}; $timeout *= $self->{timeout_factor}) {
+	for (my $delay = $self->{min_delay}; $delay < $self->{max_delay}; $delay *= $self->{delay_factor}) {
 		if (not $self->_replies_pending) {
 			$self->_send($request);
-			next ATTEMPT if not $self->_replies_pending($timeout);
+			next ATTEMPT if not $self->_replies_pending($delay);
 		}
 		next ATTEMPT if not $self->_receive(\my $response);
 
@@ -199,15 +214,11 @@ sub _send_receive {
 	croak 'Remote server not responding.';
 }
 
-sub _checksum {
-	my ($package, $sum) = @_;
-	$sum += unpack '%32a*', $package;
-	return ($sum + ($sum >> 8)) & 0xFF;
-}
+#the rest...
 
 sub _make_remote {
 	my ($self, $name) = @_;
-	my @current = ( $name =~ m{ \A / }xms ) ? () : split m{ / }x, $self->current_dir;
+	my @current = ( $name =~ m{ \A / }xms ) ? () : split m{ / }x, $self->{current_dir};
 	my @future  = grep { !/ \A \.? \z /xms } split m{ / }x, $name;
 	for my $step (@future) {
 		if ($step eq '..') {
@@ -249,7 +260,7 @@ sub change_dir {
 	$newdir = $self->_make_remote($newdir);
 	$self->_send_receive('get_pro', $NO_POS, $self->_convert_filename($newdir, 1));
 	my $olddir = $self->{current_dir};
-	$self->{current_dir} = $newdir;
+	$self->{current_dir} = Net::FSP::Dir->new($self, $self->{current_dir}, %{ $self->stat_file($newdir, 1)} );
 	return $olddir;
 }
 
@@ -331,8 +342,9 @@ sub grab_file {
 }
 
 sub list_dir {
-	my ($self, $rawdir) = @_;
-	my $dirname = $self->_convert_filename($rawdir);
+	my ($self, $raw_dir) = @_;
+	my $remote_dir = $self->_make_remote($raw_dir);
+	my $dirname = $self->_convert_filename($remote_dir, 1);
 
 	my $extra   = $self->{listing_size} != $DEFAULT_MAX_SIZE ? pack 'n', $self->{listing_size} : '';
 	my ($data, $cursor, @entries) = ('', 0);
@@ -355,13 +367,12 @@ sub list_dir {
 			substr $data, 0, length($filename) + $padding, '';
 			next ENTRY if $filename eq '.' or $filename eq '..';
 			my ($link) = $filename =~ s/ \n ( [^\n]+ ) \z //xms;
-			push @entries, {
-				name => $filename,
+			push @entries, $dispatch_for{$type}->new($self, "$remote_dir/$filename",
 				time => $time,
 				size => $size,
 				type => $type,
 				(length $link ? (link => $link) : ()),
-			};
+			);
 		}
 		elsif ($type eq 'skip') {
 			$data = $self->_send_receive('get_dir', $cursor++, $dirname, $extra);
@@ -371,18 +382,15 @@ sub list_dir {
 }
 
 sub stat_file {
-	my ($self, $filename) = @_;
-	my ($time, $size, $type_id) = unpack 'NNC', $self->_send_receive('stat_file', $NO_POS, $self->_convert_filename($filename));
+	my ($self, $filename, $escaped) = @_;
+	my ($time, $size, $type_id) = unpack 'NNC', $self->_send_receive('stat_file', $NO_POS, $self->_convert_filename($filename, $escaped));
 	my $type = $type_of{$type_id};
+	croak "No such file '$filename'" if $type eq 'end';
 	if (wantarray) {
 		return ($time, $size, $type);
 	}
 	else {
-		return {
-			size => $size,
-			type => $type,
-			time => $time,
-		};
+		return $dispatch_for{$type}->new($self, $filename, size => $size, type => $type, time => $time);
 	}
 }
 
@@ -416,13 +424,13 @@ sub upload_file {
 	return;
 }
 
-sub delete_file {
+sub remove_file {
 	my ($self, $filename) = @_;
 	$self->_send_receive('del_file', $NO_POS, $self->_convert_filename($filename));
 	return;
 }
 
-sub delete_dir {
+sub remove_dir {
 	my ($self, $filename) = @_;
 	$self->_send_receive('del_dir', $NO_POS, $self->_convert_filename($filename));
 	return;
@@ -478,28 +486,16 @@ Net::FSP - An FSP client implementation
 
 =head1 VERSION
 
-This documentation refers to Net::FSP version 0.10
+This documentation refers to Net::FSP version 0.12
 
 =head1 SYNOPSIS
 
  use Net::FSP;
  my $fsp = Net::FSP->new("hostname", { remote_port => 21 });
-  
- sub download_dir {
-     my ($dirname) = @_;
-     mkdir "./$dirname" or die "mkdir './$dirname': $!\n" if not -d "./$dirname";
-     for my $file ($fsp->list_dir($dirname)) {
-         my $filename = $file->{name};
-         if ($fsp->stat_file("$dirname/$filename")->{type} eq 'dir') {
-             download_dir("$dirname/$filename");
-         }
-         else {
-             $fsp->download_file("$dirname/$filename", "./$dirname/$filename");
-         }
-     }
- }
-  
- download_dir("/");
+ 
+ $fsp->current_dir->download('./');  
+ #do something
+ $fsp->upload_file('foo', 'foo');
 
 =head1 DESCRIPTION
 
@@ -533,27 +529,26 @@ interface.
 
 =item local_port
 
-The port the bind the connection to. This parameter is only used if
-local_address is also set. It defaults to B<0> (random).
+The local port to bind the connection to. It defaults to B<0> (random).
 
-=item min_timeout
+=item min_delay
 
-The minimal timeout in seconds before a request is resent. It defaults to
+The minimal delay in seconds before a request is resent. It defaults to
 B<1.34>.
 
-=item timeout_factor
+=item delay_factor
 
-The factor with which the timeout increases each time a request goes
+The factor with which the delay increases each time a request goes
 unresponded. It defaults to B<1.5>.
 
-=item max_timeout
+=item max_delay
 
-The maximal timeout for resending a request. If the timeout would have been
-larger than this an exception is thrown. It defaults to B<60> seconds.
+The maximal delay for resending a request. If the delay would have been larger
+than this an exception is thrown. It defaults to B<60> seconds.
 
 =item password 
 
-Your password for this server. It defaults to undef(none).
+Your password for this server. It defaults to B<undef> (none).
 
 =item max_payload_size
 
@@ -564,8 +559,8 @@ disrecommended.
 =item network_layer
 
 This sets the protocol used as network layer. Currently the only supported
-values are B<ipv4> (the default) and B<ipv6> (this requires having the Socket6 module
-installed). As of writing no FSP server supports ipv6 yet though.
+values are B<ipv4> (the default) and B<ipv6> (this requires having the Socket6
+module installed). As of writing no FSP server supports ipv6 yet though.
 
 =item read_size
 
@@ -628,28 +623,26 @@ C<download_file>.
 =item list_dir($directory_name)
 
 This method returns a list of files and subdirectories of directory
-C<$directory_name>. The entries in the lists are hashrefs containing the
-following elements: I<name>, I<time> (in Unix format), I<size> (in bytes),
-I<type> ('file' or 'dir'), and optionally I<link> (the address the symlink
-point to).
+C<$directory_name>. The entries in the lists are either a L<Net::FSP::File> or a
+L<Net::FSP::Dir> for files and directories respectively.
 
 =item stat_file($file_name)
 
 In list context this returns a list of: the modification time (in unix format),
 the size (in bytes), and the type (either I<'file'> or I<'dir'>) of file
-C<$file_name>. In scalar context it returns a hashref with I<time>, I<size>,
-and I<type> as keys.
+C<$file_name>. In scalar context it returns either a L<Net::FSP::File> or a
+L<Net::FSP::Dir> object for files and directories respectively.
 
 =item upload_file($file_name, $source)
 
 This method uploads file C<$file_name> to the server. C<$source> must either be
 a filename, a filehandle or a callback function.
 
-=item delete_file($file_name)
+=item remove_file($file_name)
 
 This method deletes file C<$file_name>.
 
-=item delete_dir($directory_name)
+=item remove_dir($directory_name)
 
 This method deletes directory C<$directory_name>.
 
@@ -676,9 +669,19 @@ or rename files.  Its return value is the same as get_protection.
 
 This method creates a directory named C<$directory_name>. 
 
-=item move_file($old_name. $new_name)
+=item move_file($old_name, $new_name)
 
-This function moves C<$old_name> to C<$newname>.
+This method moves C<$old_name> to C<$new_name>.
+
+=back
+
+=head1 TODO
+
+=over 4
+
+=item open_file($mode, $file_name)
+
+Open a file and return a filehandle.
 
 =back
 
@@ -686,7 +689,7 @@ This function moves C<$old_name> to C<$newname>.
 
 If the server encounters an error, it will be thrown as an exception string,
 prepended by I<'Received error from server: '>. Unfortunately the content of
-these errors are not well documented. Since the protocol is almost statelesss,
+these errors are not well documented. Since the protocol is mostly statelesss,
 one can usually assume these errors have no effect on later requests. If the
 server doesn't respond at all, a 'Remote server not responding.' exception will
 eventually be thrown.
@@ -704,7 +707,8 @@ Please report problems to Leon Timmermans (fawaka@gmail.com). Patches are welcom
 =head1 CONFIGURATION AND ENVIRONMENT
 
 This module has no configuration file. All configuration is done through the
-constructor.
+constructor. Some utility functions to make used of the environment are defined
+in L<Net::FSP::Util>.
 
 =head1 INCOMPATIBILITIES
 
