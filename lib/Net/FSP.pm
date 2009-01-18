@@ -2,7 +2,7 @@ package Net::FSP;
 use 5.006;
 use strict;
 use warnings;
-our $VERSION = 0.14;
+our $VERSION = 0.15;
 
 use Carp qw/croak/;
 use Socket qw/PF_INET SOCK_DGRAM sockaddr_in inet_aton INADDR_ANY/;

@@ -1,6 +1,8 @@
 package Net::FSP::Entry;
 use strict;
 use warnings;
+use Carp;
+
 use overload q{""} => sub {
 	return $_[0]->short_name;
 };

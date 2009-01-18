@@ -1,6 +1,6 @@
 ---
 name: Net-FSP
-version: 0.14
+version: 0.15
 author:
   - 'Leon Timmermans <leont@cpan.org>'
 abstract: A client implementation of the File Service Protocol
@@ -17,7 +17,7 @@ recommends:
 provides:
   Net::FSP:
     file: lib/Net/FSP.pm
-    version: 0.14
+    version: 0.15
   Net::FSP::Dir:
     file: lib/Net/FSP/Dir.pm
     version: 0
