@@ -7,13 +7,15 @@ our $VERSION = $Net::FSP::VERSION;
 
 sub list {
 	my $self = shift;
+
 	my $dir = $self->name;
-	return $self->{fsp}->list_dir($self->name.'/');
+	return $self->{fsp}->list_dir($self->name . '/');
 }
 
 sub download {
 	my ($self, $local_dir) = @_;
 	$local_dir = $self->name if not defined $local_dir;
+
 	mkdir $local_dir if not -d $local_dir;
 	for my $entry ($self->list) {
 		$entry->download;
@@ -63,11 +65,11 @@ __END__
 
 =head1 NAME
 
-Net::FSP:Dir - An FSP directory
+Net::FSP::Dir - An FSP directory
 
 =head1 VERSION
 
-This documentation refers to Net::FSP version 0.12
+This documentation refers to Net::FSP version 0.13
 
 =head1 DESCRIPTION
 

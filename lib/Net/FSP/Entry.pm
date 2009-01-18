@@ -2,7 +2,7 @@ package Net::FSP::Entry;
 use strict;
 use warnings;
 use overload q{""} => sub {
-	return $_[0]->short_name;# . ($_[0]->{type} eq 'dir' ? '/' : '');
+	return $_[0]->short_name;
 };
 our $VERSION = $Net::FSP::VERSION;
 
@@ -17,10 +17,10 @@ sub new {
 }
 
 for my $subname (qw/name type size time link/) {
-	no strict 'refs'; ##no critic strict
+	no strict 'refs';    ##no critic strict
 	*{$subname} = sub {
 		return $_[0]{$subname};
-	}
+	};
 }
 
 sub move {
@@ -31,7 +31,7 @@ sub move {
 
 sub short_name {
 	my $self = shift;
-	$self->{name} =~ / ( [^\/]* ) \z /mx;
+	$self->{name} =~ / ( [^\/]* ) \z /mx or croak "Couldn't determine short_name";
 	return $1;
 }
 
@@ -49,7 +49,7 @@ Net::FSP::Entry - An FSP directory entry
 
 =head1 VERSION
 
-This documentation refers to Net::FSP version 0.12
+This documentation refers to Net::FSP version 0.13
 
 =head1 DESCRIPTION
 

@@ -1,13 +1,24 @@
+Build.PL
 Changes
-MANIFEST
-Makefile.PL
-README
+COPYING
+examples/fsp
+examples/reader.pl
+examples/writer.pl
 lib/Net/FSP.pm
+lib/Net/FSP/Dir.pm
 lib/Net/FSP/Entry.pm
 lib/Net/FSP/File.pm
-lib/Net/FSP/Dir.pm
+lib/Net/FSP/Handle.pm
+lib/Net/FSP/Handle/Read.pm
+lib/Net/FSP/Handle/Write.pm
 lib/Net/FSP/Util.pm
+Makefile.PL
+MANIFEST
+META.yml
+README
 t/00-load.t
+t/boilerplate.t
 t/pod-coverage.t
 t/pod.t
-META.yml                                 Module meta-data (added by MakeMaker)
+TODO
+SIGNATURE    Added here by Module::Build

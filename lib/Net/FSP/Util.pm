@@ -1,28 +1,29 @@
 package Net::FSP::Util;
 use strict;
 use warnings;
-use base 'Exporter';
-our $VERSION = $NET::FSP::VERSION;
+use Exporter qw/import/;
+our $VERSION   = $NET::FSP::VERSION;
 our @EXPORT_OK = qw/get_envs get_host get_local_dir/;
 
 my %key_for = (
-	FSP_PORT       => 'remote_port',
-	FSP_LOCALIP    => 'local_address',
-	FSP_LOCALPORT  => 'local_port',
-	FSP_PASSWORD   => 'password',
-	FSP_BUF_SIZE   => 'max_payload_size',
-	FSP_DIR        => 'current_dir',
-	FSP_DELAY      => 'min_delay',
-	FSP_MAXDELAY   => 'max_delay',
-	FSP_DIR        => 'current_dir',
+	FSP_PORT      => 'remote_port',
+	FSP_LOCALIP   => 'local_address',
+	FSP_LOCALPORT => 'local_port',
+	FSP_PASSWORD  => 'password',
+	FSP_BUF_SIZE  => 'max_payload_size',
+	FSP_DIR       => 'current_dir',
+	FSP_DELAY     => 'min_delay',
+	FSP_MAXDELAY  => 'max_delay',
+	FSP_DIR       => 'current_dir',
+
 	# My own invention
-	FSP_DELAYFACT  => 'delay_factor',
+	FSP_DELAYFACT => 'delay_factor',
 );
 
 sub get_envs {
 	my %ret;
 	for my $env_key (keys %key_for) {
-		$ret{$key_for{$env_key}} = $ENV{$env_key} if defined $ENV{$env_key};
+		$ret{ $key_for{$env_key} } = $ENV{$env_key} if defined $ENV{$env_key};
 	}
 	return %ret;
 }
@@ -32,7 +33,7 @@ sub get_host {
 }
 
 sub get_local_dir {
-	my $ret = defined $ENV{FSP_LOCAL_DIR} ? $ENV{FSP_LOCAL_DIR} : "./";
+	my $ret = defined $ENV{FSP_LOCAL_DIR} ? $ENV{FSP_LOCAL_DIR} : './';
 	$ret =~ s{ (?<= [^/] ) \z }{/}mx;
 	return $ret;
 }
@@ -47,7 +48,7 @@ Net::FSP::Util - Utility functions for Net::FSP
 
 =head1 VERSION
 
-This documentation refers to Net::FSP version 0.12
+This documentation refers to Net::FSP version 0.13
 
 =head1 DESCRIPTION
 
@@ -90,7 +91,7 @@ The port number of the UDP socket used by the FSP server.
 =item FSP_LOCALIP
 
 Local Address of UDP socket. This IP address must be one of your local IP
-addresses. This variable is mainly used for multi-homed hosts.
+addresses. This variable is mainly used for multihomed hosts.
 
 =item FSP_LOCALPORT
 

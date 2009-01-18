@@ -38,6 +38,12 @@ sub accept {
 	return;
 }
 
+sub open {
+	my ($self, $mode) = @_;
+	$mode ||= '<';
+	return $self->{fsp}->open_file($self->name, $mode);
+}
+
 1;
 
 __END__
@@ -48,7 +54,7 @@ Net::FSP::File - An FSP file
 
 =head1 VERSION
 
-This documentation refers to Net::FSP version 0.12
+This documentation refers to Net::FSP version 0.13
 
 =head1 DESCRIPTION
 
@@ -82,15 +88,11 @@ files is not recommended.
 This method overwrites a file on the server. C<$source> must either be a
 filename, a filehandle or a callback function.
 
-=back
-
-=head1 TODO
-
-=over 4
-
 =item open($mode)
 
-Open a file and return a filehandle.
+Open a file and return a filehandle. I<$mode> must be either B<E<lt>> or
+B<E<gt>> for reading or writing respectively. Only one writing filehandle at a
+time may be opened, this is a protocol restriction.
 
 =back
 

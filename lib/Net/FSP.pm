@@ -2,26 +2,28 @@ package Net::FSP;
 use 5.006;
 use strict;
 use warnings;
-our $VERSION = 0.12;
+our $VERSION = 0.13;
 
 use Carp qw/croak/;
 use Socket qw/PF_INET SOCK_DGRAM sockaddr_in inet_aton INADDR_ANY/;
 use Errno qw/EAGAIN ENOBUFS EHOSTUNREACH ECONNREFUSED EHOSTDOWN ENETDOWN EPIPE EINTR/;
 use Fcntl qw/F_GETFL F_SETFL O_NONBLOCK/;
+use Symbol qw/gensym/;
 
 use Net::FSP::File;
 use Net::FSP::Dir;
+use Net::FSP::Handle;
 
-my $HEADER_SIZE = 12;
+my $HEADER_SIZE         = 12;
 my $LISTING_HEADER_SIZE = 9;
-my $LISTING_ALIGNMENT = 4;
-my $SIXTEEN_BITS = 0xFFFF;
-my $DEFAULT_MAX_SIZE = 1024;
-my $NO_POS = 0;
+my $LISTING_ALIGNMENT   = 4;
+my $SIXTEEN_BITS        = 0xFFFF;
+my $DEFAULT_MAX_SIZE    = 1024;
+my $NO_POS              = 0;
 
 my %code_for = (
 	version   => 0x10,
-	info      => 0x11, #future
+	info      => 0x11,    #future
 	'err'     => 0x40,
 	get_dir   => 0x41,
 	get_file  => 0x42,
@@ -37,7 +39,7 @@ my %code_for = (
 	grab_done => 0x4C,
 	stat_file => 0x4D,
 	move_file => 0x4E,
-	ch_passw  => 0x4F, #future
+	ch_passw  => 0x4F,    #future
 );
 my %type_of = (
 	0x00 => 'end',
@@ -46,12 +48,12 @@ my %type_of = (
 	0x2A => 'skip',
 );
 
-my %pos_must_match_for = map { $code_for{$_} => 1} qw/info get_dir get_file put_file grab_file/;
+my %pos_must_match_for = map { $code_for{$_} => 1 } qw/info get_dir get_file put_file grab_file/;
 
 my @info = qw/logging read-only reverse-lookup private-mode throughput-control extra-data/;
 my @mods = qw/owner delete create mkdir private readme list rename/;
 
-my %is_nonfatal = map { ( $_ => 1 ) } (ENOBUFS, EHOSTUNREACH, ECONNREFUSED, EHOSTDOWN, ENETDOWN, EPIPE, EAGAIN, EINTR);
+my %is_nonfatal = map { $_ => 1 } (ENOBUFS, EHOSTUNREACH, ECONNREFUSED, EHOSTDOWN, ENETDOWN, EPIPE, EAGAIN, EINTR);
 
 my %connect_sub_for = (
 	ipv4 => \&_connect_ipv4,
@@ -80,19 +82,20 @@ my %default_options = (
 # Constructor and helper functions
 sub new {
 	my ($class, $remote_host, $options) = @_;
+	croak 'Hostname undefined' if not defined $remote_host;
 	$options ||= {};
 	my %self = (
 		%default_options,
-		%{ $options },
-		remote_host      => $remote_host,
-		message_id       => int rand 65_536,
-		rin              => '',
+		%{$options},
+		remote_host => $remote_host,
+		message_id  => int rand 65_536,
+		rin         => '',
 	);
 	for my $size (qw/read_size write_size listing_size/) {
 		$self{$size} ||= $self{max_payload_size};
 	}
 	my $self = bless \%self, $class;
-	my $connector = $connect_sub_for{$self->{network_layer}} or croak 'No such network layer';
+	my $connector = $connect_sub_for{ $self->{network_layer} } or croak 'No such network layer';
 	$self->$connector();
 	$self->_prepare_socket();
 	$self->change_dir($self->{current_dir});
@@ -104,7 +107,7 @@ sub _connect_ipv4 {
 
 	socket $self->{socket}, PF_INET, SOCK_DGRAM, 0 or croak "Could not make socket: $!";
 	my $local_address = $self->{local_address} ? inet_aton($self->{local_address}) : INADDR_ANY or croak "No such localhost: $!";
-	bind $self->{socket}, sockaddr_in($self->{local_port}, $local_address) or croak "Could not bind: $!" ;
+	bind $self->{socket}, sockaddr_in($self->{local_port}, $local_address) or croak "Could not bind: $!";
 	my $packed_ip = inet_aton($self->{remote_host}) or croak "No such host '$self->{remote_host}'";
 	connect $self->{socket}, sockaddr_in($self->{remote_port}, $packed_ip) or croak "Could not connect to remote host: $!";
 	return;
@@ -126,7 +129,7 @@ sub _connect_ipv6 {
 sub _prepare_socket {
 	my $self = shift;
 	binmode $self->{socket}, ':raw';
-	my $flags = fcntl $self->{socket}, F_GETFL, 0       or croak "Can't get flags for the socket: $!";
+	my $flags = fcntl $self->{socket}, F_GETFL, 0 or croak "Can't get flags for the socket: $!";
 	fcntl $self->{socket}, F_SETFL, $flags | O_NONBLOCK or croak "Can't set flags for the socket: $!";
 	vec($self->{rin}, fileno $self->{socket}, 1) = 1;
 	return;
@@ -150,13 +153,13 @@ sub _pack_request {
 
 sub _check_fatal {
 	my $message = shift;
-	croak "$message: $!" if not $is_nonfatal{$! + 0};
+	croak "$message: $!" if not $is_nonfatal{ $! + 0 };
 	return;
 }
 
 sub _receive {
 	my ($self, $response) = @_;
-	return recv $self->{socket}, ${$response}, $self->{max_payload_size} + $HEADER_SIZE, 0 or _check_fatal('Could not receive');
+	return defined recv $self->{socket}, ${$response}, $self->{max_payload_size} + $HEADER_SIZE, 0 or _check_fatal('Could not receive');
 }
 
 sub _send {
@@ -168,24 +171,25 @@ sub _send {
 sub _replies_pending {
 	my $self = shift;
 	my $delay = shift || 0;
-	return select my $rout = $self->{rin}, undef, undef, $delay;
+	return scalar select my $rout = $self->{rin}, undef, undef, $delay;
 }
 
 sub _unpack_response {
 	my ($self, $response) = @_;
 	my %fields;
-	@fields{'command', 'checksum', 'key', 'message_id', 'length', 'pos', 'fulldata'} = unpack 'CCnnnN a*', $response;
-	@fields{'data', 'extra'} = unpack "a[$fields{length}]a*", $fields{fulldata};
+	@fields{ 'command', 'checksum', 'key', 'message_id', 'length', 'pos', 'fulldata' } = unpack 'CCnnnN a*', $response;
+	@fields{ 'data', 'extra' } = unpack "a[$fields{length}]a*", $fields{fulldata};
 	return %fields;
 }
 
 sub _response_is_correct {
 	my ($self, $value_for, $response, $send_command, $send_pos) = @_;
 	vec($response, 1, 8) = 0;
-	return $value_for->{checksum} == _checksum($response, 0)
-		and length $value_for->{fulldata} >= $value_for->{length}
-		and ($value_for->{command} == $code_for{$send_command} || $value_for->{command} == $code_for{err})
-		and not ($pos_must_match_for{$value_for->{command}} && $send_pos != $value_for->{pos});
+	return
+	      $value_for->{checksum} == _checksum($response, 0)
+	  and length $value_for->{fulldata} >= $value_for->{length}
+	  and ($value_for->{command} == $code_for{$send_command} || $value_for->{command} == $code_for{err})
+	  and not($pos_must_match_for{ $value_for->{command} } && $send_pos != $value_for->{pos});
 }
 
 # the main networking function, known as interact() in the C library.
@@ -195,13 +199,12 @@ sub _send_receive {
 
 	my $request = $self->_pack_request($send_command, $send_pos, $send_data, $send_extra);
 	ATTEMPT:
-	for (my $delay = $self->{min_delay}; $delay < $self->{max_delay}; $delay *= $self->{delay_factor}) {
+	for (my $delay = $self->{min_delay} ; $delay < $self->{max_delay} ; $delay *= $self->{delay_factor}) {
 		if (not $self->_replies_pending) {
 			$self->_send($request);
 			next ATTEMPT if not $self->_replies_pending($delay);
 		}
 		next ATTEMPT if not $self->_receive(\my $response);
-
 		next ATTEMPT if length $response < $HEADER_SIZE;
 		my %response = $self->_unpack_response($response);
 		next ATTEMPT if not $self->_response_is_correct(\%response, $response, $send_command, $send_pos);
@@ -209,17 +212,17 @@ sub _send_receive {
 		redo ATTEMPT if $response{message_id} != $self->{message_id};
 
 		croak sprintf 'Received error from server: %s', unpack 'Z*', $response{data} if $response{command} == $code_for{err};
-		return wantarray ? @response{'data', 'extra'} : $response{data};
+		return wantarray ? @response{ 'data', 'extra' } : $response{data};
 	}
-	croak 'Remote server not responding.';
+	croak 'Remote server not responding';
 }
 
 #the rest...
 
 sub _make_remote {
 	my ($self, $name) = @_;
-	my @current = ( $name =~ m{ \A / }xms ) ? () : split m{ / }x, $self->{current_dir};
-	my @future  = grep { !/ \A \.? \z /xms } split m{ / }x, $name;
+	my @current = $name =~ m{ \A / }xms ? () : split m{ / }x, $self->{current_dir};
+	my @future = grep { !/ \A \.? \z /xms } split m{ / }x, $name;
 	for my $step (@future) {
 		if ($step eq '..') {
 			croak 'Can\'t go outside of root directory' if @current == 0;
@@ -235,7 +238,7 @@ sub _make_remote {
 sub _convert_filename {
 	my ($self, $filename, $escaped) = @_;
 	my $path = defined $escaped ? $filename : $self->_make_remote($filename);
-	return sprintf "%s%s\0", $path, defined $self->{password} ? "\n".$self->{password} : '';
+	return sprintf "%s%s\0", $path, defined $self->{password} ? "\n" . $self->{password} : '';
 }
 
 sub _connected {
@@ -260,7 +263,7 @@ sub change_dir {
 	$newdir = $self->_make_remote($newdir);
 	$self->_send_receive('get_pro', $NO_POS, $self->_convert_filename($newdir, 1));
 	my $olddir = $self->{current_dir};
-	$self->{current_dir} = Net::FSP::Dir->new($self, $self->{current_dir}, %{ $self->stat_file($newdir, 1)} );
+	$self->{current_dir} = Net::FSP::Dir->new($self, $self->{current_dir}, %{ $self->stat_file($newdir, 1) });
 	return $olddir;
 }
 
@@ -293,23 +296,32 @@ sub cat_file {
 	return $return_value;
 }
 
+sub _get_reader {
+	my ($self, $code, $filename, $pos_ref) = @_;
+	my $remote_name = $self->_convert_filename($filename);
+	my $extra = $self->{read_size} != $DEFAULT_MAX_SIZE ? pack 'n', $self->{read_size} : '';
+	return sub {
+		my $block = $self->_send_receive($code, ${$pos_ref}, $remote_name, $extra);
+		${$pos_ref} += length $block;
+		return $block;
+	};
+}
+
 sub _download_to {
 	my ($self, $code, $filename, $add) = @_;
 	my $pos = 0;
-	my $remote_name = $self->_convert_filename($filename);
-	my $extra = $self->{read_size} != $DEFAULT_MAX_SIZE ? pack 'n', $self->{read_size} : '';
+	my $reader = $self->_get_reader($code, $filename, \$pos);
 	BLOCK:
 	while (1) {
-		my $block = $self->_send_receive($code, $pos, $remote_name, $extra);
+		my $block = $reader->();
 		last BLOCK if length $block == 0;
 		$add->($block);
-		$pos += length $block;
 	}
 	return;
 }
 
 sub download_file {
-	my($self, $filename, $other) = @_;
+	my ($self, $filename, $other) = @_;
 	if (ref($other) eq '') {
 		open my $fh, '>:raw', $other or croak "Couldn't open file '$other' for writing: $!";
 		$self->download_file($filename, $fh);
@@ -346,7 +358,7 @@ sub list_dir {
 	my $remote_dir = $self->_make_remote($raw_dir);
 	my $dirname = $self->_convert_filename($remote_dir, 1);
 
-	my $extra   = $self->{listing_size} != $DEFAULT_MAX_SIZE ? pack 'n', $self->{listing_size} : '';
+	my $extra = $self->{listing_size} != $DEFAULT_MAX_SIZE ? pack 'n', $self->{listing_size} : '';
 	my ($data, $cursor, @entries) = ('', 0);
 
 	ENTRY:
@@ -367,7 +379,9 @@ sub list_dir {
 			substr $data, 0, length($filename) + $padding, '';
 			next ENTRY if $filename eq '.' or $filename eq '..';
 			my ($link) = $filename =~ s/ \n ( [^\n]+ ) \z //xms;
-			push @entries, $dispatch_for{$type}->new($self, "$remote_dir/$filename",
+			push @entries, $dispatch_for{$type}->new(
+				$self,
+				"$remote_dir/$filename",
 				time => $time,
 				size => $size,
 				type => $type,
@@ -394,29 +408,52 @@ sub stat_file {
 	}
 }
 
+sub _get_writer {
+	my ($self, $filename, $timestamp, $handle) = @_;
+	my $position = 0;
+	croak 'You can only write one file at the same time' if $self->{writing};
+	$self->{writing} = 1;
+	return sub {
+		my $part = shift;
+		if (defined $part) {
+			$self->_send_receive('put_file', $position, $part);
+			$position += length $part;
+			chomp $part;
+		}
+		else {
+			$self->_send_receive('install', $NO_POS, $self->_convert_filename($filename), defined $timestamp ? pack('N', $timestamp) : '');
+			$self->{writing} = 0;
+		}
+	};
+}
+
 sub _upload_to {
 	my ($self, $filename, $sub, $timestamp) = @_;
-	my $position = 0;
-	while (defined(my $part = $sub->($self->{write_size}))) {
-		$self->_send_receive('put_file', $position, $part);
-		$position += length $part;
+	my $writer = $self->_get_writer($filename, $timestamp);
+	while (1) {
+		my $part = $sub->($self->{write_size});
+		$writer->($part);
+		last if not defined $part;
 	}
-	$self->_send_receive('install', $NO_POS, $self->_convert_filename($filename), defined $timestamp ? pack('N', $timestamp) : '');
 	return;
 }
 
 sub upload_file {
-	my($self, $filename, $other, $timestamp) = @_;
+	my ($self, $filename, $other, $timestamp) = @_;
 	if (ref($other) eq '') {
 		open my $fh, '<:raw', $other or croak "Couldn't open file '$other' for reading: $!";
 		$self->upload_file($filename, $fh, $timestamp);
 		close $fh or croak "Couldn't close filehandle!?: $!";
 	}
 	elsif (ref($other) eq 'GLOB') {
-		$self->_upload_to($filename, sub {
-			defined read $other, my $return_value, $_[0] or croak "Couldn't read: $!";
-			return length $return_value ? $return_value : undef;
-		}, $timestamp);
+		$self->_upload_to(
+			$filename,
+			sub {
+				defined read $other, my $return_value, $_[0] or croak "Couldn't read: $!";
+				return length $return_value ? $return_value : undef;
+			},
+			$timestamp
+		);
 	}
 	else {
 		$self->_upload_to($filename, $other, $timestamp);
@@ -436,10 +473,9 @@ sub remove_dir {
 	return;
 }
 
-
 sub _protection_helper {
 	my ($self, $command, $filename, $extra) = @_;
-	my (undef, $protection) = $self->_send_receive($command, $NO_POS, $self->_convert_filename($filename), $extra);
+	my $protection = ($self->_send_receive($command, $NO_POS, $self->_convert_filename($filename), $extra))[1];
 	my @bits = split //x, unpack 'b8', $protection;
 	my %prot = map { $mods[$_] => $bits[$_] } 0..$#mods;
 	return \%prot;
@@ -476,17 +512,24 @@ sub CLONE_SKIP {
 	return 1;
 }
 
+sub open_file {
+	my ($self, $filename, $mode) = @_;
+	my $ret = gensym;
+	tie *{$ret}, 'Net::FSP::Handle', $self, $filename, $mode or croak "Could not open remote file $filename: $!";
+	return $ret;
+}
+
 1;
 
 __END__
 
 =head1 NAME
 
-Net::FSP - An FSP client implementation
+Net::FSP - A client implementation of the File Service Protocol
 
 =head1 VERSION
 
-This documentation refers to Net::FSP version 0.12
+This documentation refers to Net::FSP version 0.13
 
 =head1 SYNOPSIS
 
@@ -554,7 +597,7 @@ Your password for this server. It defaults to B<undef> (none).
 
 The maximal size of the payload. It defaults to B<1024>. Some servers may not
 support values higher than 1024. Setting this higher than the MTU - 12 is
-disrecommended.
+not recommended.
 
 =item network_layer
 
@@ -638,6 +681,10 @@ L<Net::FSP::Dir> object for files and directories respectively.
 This method uploads file C<$file_name> to the server. C<$source> must either be
 a filename, a filehandle or a callback function.
 
+=item open_file($file_name, $mode)
+
+Open a file and return a filehandle.
+
 =item remove_file($file_name)
 
 This method deletes file C<$file_name>.
@@ -675,21 +722,11 @@ This method moves C<$old_name> to C<$new_name>.
 
 =back
 
-=head1 TODO
-
-=over 4
-
-=item open_file($mode, $file_name)
-
-Open a file and return a filehandle.
-
-=back
-
 =head1 DIAGNOSTICS
 
 If the server encounters an error, it will be thrown as an exception string,
 prepended by I<'Received error from server: '>. Unfortunately the content of
-these errors are not well documented. Since the protocol is mostly statelesss,
+these errors are not well documented. Since the protocol is mostly stateless
 one can usually assume these errors have no effect on later requests. If the
 server doesn't respond at all, a 'Remote server not responding.' exception will
 eventually be thrown.
