@@ -2,7 +2,7 @@ package Net::FSP;
 use 5.006;
 use strict;
 use warnings;
-our $VERSION = 0.13;
+our $VERSION = 0.14;
 
 use Carp qw/croak/;
 use Socket qw/PF_INET SOCK_DGRAM sockaddr_in inet_aton INADDR_ANY/;
@@ -529,7 +529,7 @@ Net::FSP - A client implementation of the File Service Protocol
 
 =head1 VERSION
 
-This documentation refers to Net::FSP version 0.13
+This documentation refers to Net::FSP version 0.14
 
 =head1 SYNOPSIS
 

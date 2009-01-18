@@ -1,5 +1,11 @@
 Revision history for Net-FSP
 
+0.14    January 17th, 2009
+        Fixed README and Changes
+
+0.13    January 17th, 2009
+        Added support for FSP filehandles
+
 0.12    September 4th, 2008
         Added Net::FSP::Entry, Net::FSP::File, Net::FSP::Dir, Net::FSP::Util.
         Fixed some minor API issues.
