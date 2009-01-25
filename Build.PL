@@ -23,6 +23,10 @@ my $builder = Module::Build->new(
             bugtracker  => 'http://rt.cpan.org/NoAuth/Bugs.html?Dist=Net-FSP',
         },
         keywords        => [ 'FSP', 'File service protocol', 'File transfer' ],
+		no_index        => {
+			'package' => [ 'Net::FSP::Handle' ],
+			namespace => [ 'Net::FSP::Handle' ],
+		},
     },
     add_to_cleanup      => [ 'Net-FSP-*' ],
     create_makefile_pl  => 'traditional',

@@ -18,7 +18,7 @@ sub download {
 
 	mkdir $local_dir if not -d $local_dir;
 	for my $entry ($self->list) {
-		$entry->download;
+		$entry->download("$local_dir/$entry");
 	}
 	return;
 }

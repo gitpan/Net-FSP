@@ -2,7 +2,7 @@ package Net::FSP::Handle;
 
 use strict;
 use warnings;
-use Exporter qw/import/;
+use base 'Exporter';
 our $VERSION   = $Net::FSP::VERSION;
 our @EXPORT_OK = qw/do_or_fail/;
 
